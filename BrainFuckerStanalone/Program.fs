@@ -1,102 +1,87 @@
-﻿// Learn more about F# at http://fsharp.org
-// See the 'F# Tutorial' project for more help.
-module BrainFuckInstruction
-type Instruction = 
-    | Point
-    | Comma
-    | Plus
-    | Minus
-    | Increment
-    | Decrement
-    | StartOfLoop
-    | EndOfLoop
-and MachineState = {
-    tape: byte list;
-    position: int;
-    instructions: Instruction list
-}
+﻿module BrainFuckInstruction
+open Instructions
+open MachineState
 
-type Program = Instruction list
-
-let parseProgram (brainfuckProgram:string) =
-    let rec parseProgram' rawInstructions =
-        match rawInstructions with
-        | [] -> []
-        | instruction::rawProgram -> 
-            let parsedInstruction = 
-                match instruction with
-                | '.' -> Some Point
-                | ',' -> Some Comma
-                | '+' -> Some Plus
-                | '-' -> Some Minus
-                | '>' -> Some Increment
-                | '<' -> Some Decrement
-                | '[' -> Some StartOfLoop
-                | ']' -> Some EndOfLoop
-                | _ -> None
-            match parsedInstruction with
-            | Some instruction' -> instruction'::(parseProgram' rawProgram)
-            | None -> parseProgram' rawProgram
-
-    let separatedInstructions = [for c in brainfuckProgram -> c]
-    parseProgram' separatedInstructions
-
-let initializeMachine instructions =
-    {
-        tape = [ for i in 0 .. 30000 -> 0uy ];
-        position = 0;
-        instructions = instructions
-    }
-
-let advanceInstruction ({ instructions = instructions } as state) =
-    match instructions with
+let advanceInstruction state =
+    match state.instructions with
     | [] -> state
     | x::xs -> { state with instructions = xs }
 
-let processProgram initialState =
-    let processTapeElem elemPosition tape elemAction =
-        let myTape = tape |> List.mapi (fun currentPosition currentElem ->
-                if currentPosition = elemPosition 
-                then elemAction currentElem 
-                else currentElem)
-        myTape
-    let operateOnTapeElem state = processTapeElem state.position state.tape    
+let processTapeElem elemPosition tape elemAction =
+    let myTape = tape |> List.mapi (fun currentPosition currentElem ->
+            if currentPosition = elemPosition 
+            then elemAction currentElem 
+            else currentElem)
+    myTape
 
-    let rec processRoutine instructionsAtBeginningOfRoutine currentState = 
-        let handleInstruction instruction =
-            let newState = 
-                match instruction with
-                | Increment -> { currentState with position = currentState.position+1 }
-                | Decrement -> { currentState with position = currentState.position-1 }
-                | Plus -> { currentState with tape = operateOnTapeElem currentState (fun elem -> elem+1uy) }
-                | Minus -> { currentState with tape = operateOnTapeElem currentState (fun elem -> if elem > 0uy then elem-1uy else 0uy) }
-                | StartOfLoop -> processRoutine (Some currentState.instructions.Tail) (currentState |> advanceInstruction)
-                | EndOfLoop -> 
-                    match instructionsAtBeginningOfRoutine with
-                    | Some [] -> currentState
-                    | Some (_::xs as instructions) -> 
-                        if (List.item currentState.position currentState.tape) <> 0uy
-                        then processRoutine instructionsAtBeginningOfRoutine { currentState with instructions = instructions }
-                        else currentState
-                    | None ->
-                        failwith "Unmatched end of loop operator"
-                | _ -> currentState
-                |> advanceInstruction
-            newState
+/// <param name="instructionsAtBeginningOfRoutine">It is the instructions list when a loop was started.
+/// if it equals None then we are not inside a loop. Otherwise we use it to re execute the loop
+/// when an end of loop instruction is encountered.</param>
+let rec processRoutine instructionsAtBeginningOfRoutine currentState =
+    let { 
+            position = position; 
+            instructions = currentInstructions; 
+            tape = tape;
+            input = currentInput;
+        } = currentState
+    let operateOnTapeElem = processTapeElem position tape
+    let handleInstruction instruction =
+        match instruction with
+        | Debug -> currentState
+        | Increment -> { currentState with position = position+1 }
+        | Decrement -> { currentState with position = position-1 }
+        | Plus -> { currentState with tape = operateOnTapeElem (fun elem -> elem+1uy) }
+        | Minus -> { currentState with tape = operateOnTapeElem (fun elem -> elem-1uy) }
+        | StartOfLoop -> 
+            match tape.Item position with
+            | 0uy -> 
+                let instructionsAfterLoop = skipLoop currentInstructions
+                { currentState with instructions = instructionsAfterLoop }
 
-        let newState = handleInstruction currentState.instructions.Head 
-        match newState.instructions with 
-        | [] -> newState
-        | x::xs -> processRoutine instructionsAtBeginningOfRoutine newState
+            | _ -> processRoutine (Some currentInstructions.Tail) (currentState |> advanceInstruction)
+        | EndOfLoop ->
+            match instructionsAtBeginningOfRoutine with
+                | Some instructions' -> 
+                    if tape.Item position <> 0uy
+                    then processRoutine (Some instructions') { currentState with instructions = instructions' }
+                    else currentState
+                | None ->
+                    failwith "Unmatched end of loop operator"
+        | Point -> 
+            let currentByte = List.item currentState.position currentState.tape
+            printf "%s" (System.Text.Encoding.ASCII.GetString [|currentByte|])
+            currentState
+        | Comma -> 
+            if Seq.isEmpty currentInput
+            then failwith "Input is empty"
+            else 
+                let input = Seq.head currentInput
+                let newTape = operateOnTapeElem (fun _ -> input)
+                { currentState with tape = newTape; input = Seq.tail currentInput }
+        
+    match currentInstructions with
+    | [] -> currentState
+    | x::xs ->
+        let newState = handleInstruction x
+        if (x<>EndOfLoop) 
+        then processRoutine instructionsAtBeginningOfRoutine (newState |> advanceInstruction)
+        else newState
 
-    processRoutine None initialState
+let processProgram = processRoutine None
 
+let inputToByteSeq input = 
+    seq { for c in input -> Array.head(System.Text.Encoding.ASCII.GetBytes [|c|]) }
 
 [<EntryPoint>]
 let main argv = 
-    let finalState = 
-        "+++>++[-]<+++"
-            |> parseProgram
-            |> initializeMachine
+    let instructions = 
+//        """+++[>+++[>+<-]<-]"""
+        """+++++++++++>+>>>>++++++++++++++++++++++++++++++++++++++++++++>++++++++++++++++++++++++++++++++<<<<<<[>[>>>>>>+>+<<<<<<<-]>>>>>>>[<<<<<<<+>>>>>>>-]<[>++++++++++[-<-[>>+>+<<<-]>>>[<<<+>>>-]+<[>[-]<[-]#]>[<<[>>>+<<<-]>>[-]]<<]>>>[>>+>+<<<-]>>>[<<<+>>>-]+<[>[-]<[-]]>[<<+>>[-]]<<<<<<<]>>>>>[++++++++++++++++++++++++++++++++++++++++++++++++.[-]]++++++++++<[->-<]>++++++++++++++++++++++++++++++++++++++++++++++++.[-]<<<<<<<<<<<<[>>>+>+<<<<-]>>>>[<<<<+>>>>-]<-[>>.>.<<<[-]]<<[>>+>+<<<-]>>>[<<<+>>>-]<<[<+>-]>[<+>-]<<<-]"""
+        |> Instructions.parseProgram
+
+    
+    let program = 
+        (instructions, "hola" |> inputToByteSeq)
+            |> MachineState.create
             |> processProgram
     0 // return an integer exit code
